@@ -1,0 +1,103 @@
+FUNCTION_BLOCK "FB_ZonePlant"
+TITLE = Simulated TCU zone (plant model for PLCSIM tests)
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : chad416
+VERSION : 0.1
+//  Same two-mass model as src/tcutune/plant.py (no noise), explicit Euler.
+//  Lets FB_ZonePID run in a closed loop inside S7-PLCSIM without hardware.
+//  Simulation only: never call this block in a real machine program.
+   VAR_INPUT
+      Heat : Real;   // % heater
+      Cool : Real;   // % cooling valve
+      Qproc : Real;   // kW, process heat into the machine part
+      Init : Bool;   // TRUE: set both temperatures and the delay line to InitTemp
+      InitTemp : Real := 25.0;   // degC
+      Cw : Real := 63.0;   // kJ/K
+      Cm : Real := 150.0;   // kJ/K
+      UAwm : Real := 1.0;   // kW/K
+      UAloss : Real := 0.12;   // kW/K
+      PheatMax : Real := 12.0;   // kW
+      Kcool : Real := 0.5;   // kW/K at 100 % valve
+      Tcw : Real := 15.0;   // degC
+      Tamb : Real := 25.0;   // degC
+      DelaySamples : Int := 80;   // dead time / CycleTime, 1..300
+      TauSensor : Real := 4.0;   // s
+      SensorOnMetal : Bool;   // FALSE: water temperature, TRUE: machine part
+      CycleTime : Real := 0.1;   // s
+   END_VAR
+
+   VAR_OUTPUT
+      Pv : Real;   // measured temperature, degC
+      Tw : Real;   // water temperature, degC
+      Tm : Real;   // machine part temperature, degC
+   END_VAR
+
+   VAR
+      sTw : Real := 25.0;
+      sTm : Real := 25.0;
+      sSensor : Real := 25.0;
+      sDelay : Array[0..299] of Real;
+      sIdx : Int;
+   END_VAR
+
+   VAR_TEMP
+      tHeat : Real;
+      tCool : Real;
+      tPh : Real;
+      tPc : Real;
+      tDTw : Real;
+      tDTm : Real;
+      tRaw : Real;
+      tDelayed : Real;
+      tN : Int;
+      i : Int;
+   END_VAR
+
+
+BEGIN
+	REGION Init
+	    #tN := LIMIT(MN := 1, IN := #DelaySamples, MX := 300);
+	    IF #Init THEN
+	        #sTw := #InitTemp;
+	        #sTm := #InitTemp;
+	        #sSensor := #InitTemp;
+	        FOR #i := 0 TO 299 DO
+	            #sDelay[#i] := #InitTemp;
+	        END_FOR;
+	        #sIdx := 0;
+	    END_IF;
+	END_REGION
+
+	REGION Model
+	    #tHeat := LIMIT(MN := 0.0, IN := #Heat, MX := 100.0);
+	    #tCool := LIMIT(MN := 0.0, IN := #Cool, MX := 100.0);
+	    #tPh := #tHeat / 100.0 * #PheatMax;
+	    #tPc := #tCool / 100.0 * #Kcool * MAX(IN1 := #sTw - #Tcw, IN2 := 0.0);
+	    #tDTw := (#tPh - #tPc + #UAwm * (#sTm - #sTw)) / #Cw;
+	    #tDTm := (#UAwm * (#sTw - #sTm) - #UAloss * (#sTm - #Tamb) + #Qproc) / #Cm;
+	    #sTw := #sTw + #CycleTime * #tDTw;
+	    #sTm := #sTm + #CycleTime * #tDTm;
+	END_REGION
+
+	REGION Sensor
+	    IF #SensorOnMetal THEN
+	        #tRaw := #sTm;
+	    ELSE
+	        #tRaw := #sTw;
+	    END_IF;
+	    IF #sIdx >= #tN THEN
+	        #sIdx := 0;
+	    END_IF;
+	    #tDelayed := #sDelay[#sIdx];
+	    #sDelay[#sIdx] := #tRaw;
+	    #sIdx := #sIdx + 1;
+	    IF #sIdx >= #tN THEN
+	        #sIdx := 0;
+	    END_IF;
+	    #sSensor := #sSensor + #CycleTime / (#TauSensor + #CycleTime) * (#tDelayed - #sSensor);
+	END_REGION
+
+	#Pv := #sSensor;
+	#Tw := #sTw;
+	#Tm := #sTm;
+END_FUNCTION_BLOCK

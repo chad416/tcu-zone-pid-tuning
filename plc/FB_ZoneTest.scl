@@ -1,0 +1,78 @@
+FUNCTION_BLOCK "FB_ZoneTest"
+TITLE = Closed-loop test harness: scenario -> FB_ZonePID -> FB_ZonePlant
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : chad416
+VERSION : 0.1
+//  Call from a cyclic interrupt OB every CycleTime (OB30, 100 ms).
+//  Order per call: scenario, controller (uses last Pv), plant (returns new Pv).
+//  Restart = TRUE for one call starts the run from a cold zone (25 degC).
+//  Plant parameters are zone "A" of tcutune.plant.PRESETS (block defaults).
+   VAR_INPUT
+      Restart : Bool;
+      CycleTime : Real := 0.1;   // s, must equal the OB cycle
+      Gain : Real := 5.0;   // %/K
+      Ti : Real := 300.0;   // s
+      Td : Real := 0.0;   // s
+      SpWeight : Real := 1.0;
+      CoolGainRatio : Real := 1.0;
+      Manual : Bool;
+      ManualValue : Real;   // %
+   END_VAR
+
+   VAR_OUTPUT
+      Setpoint : Real;   // degC
+      Pv : Real;   // degC
+      OutHeat : Real;   // %
+      OutCool : Real;   // %
+      Output : Real;   // %, heating-equivalent
+      Qproc : Real;   // kW
+      Time : Real;   // s
+      Done : Bool;
+   END_VAR
+
+   VAR
+      iScenario : "FB_Scenario";
+      iPid : "FB_ZonePID";
+      iPlant : "FB_ZonePlant";
+      sPv : Real := 25.0;
+   END_VAR
+
+
+BEGIN
+	#iScenario(Restart := #Restart,
+	           CycleTime := #CycleTime);
+
+	IF #Restart THEN
+	    #sPv := 25.0;
+	END_IF;
+
+	#iPid(Setpoint := #iScenario.Setpoint,
+	      Input := #sPv,
+	      ManualEnable := #Manual,
+	      ManualValue := #ManualValue,
+	      Reset := #Restart,
+	      Gain := #Gain,
+	      Ti := #Ti,
+	      Td := #Td,
+	      SpWeight := #SpWeight,
+	      CoolGainRatio := #CoolGainRatio,
+	      CycleTime := #CycleTime);
+
+	#iPlant(Heat := #iPid.OutHeat,
+	        Cool := #iPid.OutCool,
+	        Qproc := #iScenario.Qproc,
+	        Init := #Restart,
+	        InitTemp := 25.0,
+	        CycleTime := #CycleTime);
+
+	#sPv := #iPlant.Pv;
+
+	#Setpoint := #iScenario.Setpoint;
+	#Pv := #sPv;
+	#OutHeat := #iPid.OutHeat;
+	#OutCool := #iPid.OutCool;
+	#Output := #iPid.Output;
+	#Qproc := #iScenario.Qproc;
+	#Time := #iScenario.Time;
+	#Done := #iScenario.Done;
+END_FUNCTION_BLOCK

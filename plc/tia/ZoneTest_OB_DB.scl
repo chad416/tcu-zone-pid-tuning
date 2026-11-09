@@ -1,0 +1,46 @@
+// TIA Portal only (not run by the Python translator, which handles FBs only).
+// 1. Generate FB_Scenario, FB_ZonePID, FB_ZonePlant, FB_ZoneTest from ../*.scl.
+// 2. Create a Cyclic interrupt OB, number 30, cycle 100 ms, named "Cyclic_ZoneTest".
+// 3. Generate this source (overwrite "Cyclic_ZoneTest", create the two DBs).
+// 4. In PLCSIM: set "ZoneCmd".Start TRUE to restart the run; record a Trace of
+//    "iZoneTest".Setpoint / Pv / OutHeat / OutCool / Qproc (sample every OB30 call).
+
+DATA_BLOCK "ZoneCmd"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+   VAR
+      Start : Bool;   // rising edge restarts the test run
+      StartOld : Bool;
+   END_VAR
+
+BEGIN
+
+END_DATA_BLOCK
+
+DATA_BLOCK "iZoneTest"
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+NON_RETAIN
+"FB_ZoneTest"
+
+BEGIN
+
+END_DATA_BLOCK
+
+ORGANIZATION_BLOCK "Cyclic_ZoneTest"
+TITLE = Closed-loop zone test, every 100 ms
+{ S7_Optimized_Access := 'TRUE' }
+VERSION : 0.1
+   VAR_TEMP
+      tRestart : Bool;
+   END_VAR
+
+BEGIN
+	#tRestart := "ZoneCmd".Start AND NOT "ZoneCmd".StartOld;
+	"ZoneCmd".StartOld := "ZoneCmd".Start;
+
+	// Tuning: write "iZoneTest".Gain / Ti / CoolGainRatio from a watch table.
+	"iZoneTest"(Restart := #tRestart,
+	            CycleTime := 0.1);
+END_ORGANIZATION_BLOCK

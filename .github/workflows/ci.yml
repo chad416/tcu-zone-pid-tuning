@@ -1,0 +1,20 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt
+      - run: python -m pytest -q
+      - name: tool smoke test
+        run: |
+          pip install -e .
+          tcu-tune demo /tmp/zones --zones A --duration 3600
+          tcu-tune batch /tmp/zones --out /tmp/summary.csv
+          cat /tmp/summary.csv

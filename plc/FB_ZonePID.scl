@@ -1,0 +1,123 @@
+FUNCTION_BLOCK "FB_ZonePID"
+TITLE = Split-range heat/cool PID for one TCU zone
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : chad416
+VERSION : 0.1
+//  Call every CycleTime seconds from a cyclic interrupt OB (e.g. OB30, 100 ms).
+//  Output is in heating-equivalent percent: Output > 0 heats, Output < 0 cools.
+//  CoolGainRatio = Kcool / Kheat (process gains). The cooling output is divided
+//  by it so the loop gain is the same in both ranges.
+//  The float32 reference model is src/tcutune/pid.py: keep both in step.
+   VAR_INPUT
+      Setpoint : Real;   // degC
+      Input : Real;   // measured temperature, degC
+      ManualEnable : Bool;   // TRUE: Output := ManualValue (bumpless back to auto)
+      ManualValue : Real;   // %, heating-equivalent
+      Reset : Bool;   // clears integral and derivative state, outputs 0
+      Gain : Real := 5.0;   // %/K
+      Ti : Real := 300.0;   // s, 0 = no integral action
+      Td : Real := 0.0;   // s, 0 = no derivative action
+      DerivFilterN : Real := 10.0;   // derivative filter time constant = Td / N
+      SpWeight : Real := 1.0;   // setpoint weight of the P part (0..1)
+      Tt : Real := 0.0;   // s, anti-windup tracking time, <= 0 uses Ti
+      CoolGainRatio : Real := 1.0;   // Kcool / Kheat
+      Deadband : Real := 0.0;   // %, |Output| below this switches both actuators off
+      CycleTime : Real := 0.1;   // s, call interval of the OB
+   END_VAR
+
+   VAR_OUTPUT
+      OutHeat : Real;   // % heater
+      OutCool : Real;   // % cooling valve
+      Output : Real;   // %, heating-equivalent controller output
+   END_VAR
+
+   VAR
+      sI : Real;   // integral part
+      sD : Real;   // filtered derivative part
+      sPvPrev : Real;
+      sInitialised : Bool;
+   END_VAR
+
+   VAR_TEMP
+      tP : Real;
+      tA : Real;
+      tU0 : Real;
+      tU : Real;
+      tOutLo : Real;
+      tRatio : Real;
+      tTt : Real;
+   END_VAR
+
+
+BEGIN
+	REGION Reset
+	    IF #Reset THEN
+	        #sI := 0.0;
+	        #sD := 0.0;
+	        #sInitialised := FALSE;
+	        #Output := 0.0;
+	        #OutHeat := 0.0;
+	        #OutCool := 0.0;
+	        RETURN;
+	    END_IF;
+	    IF NOT #sInitialised THEN
+	        #sPvPrev := #Input;
+	        #sInitialised := TRUE;
+	    END_IF;
+	END_REGION
+
+	REGION Parameters
+	    #tRatio := #CoolGainRatio;
+	    IF #tRatio < 0.01 THEN
+	        #tRatio := 0.01;
+	    END_IF;
+	    #tOutLo := -100.0 * #tRatio;
+	    #tTt := #Tt;
+	    IF #tTt <= 0.0 THEN
+	        #tTt := #Ti;
+	    END_IF;
+	END_REGION
+
+	REGION PID
+	    #tP := #Gain * (#SpWeight * #Setpoint - #Input);
+
+	    // derivative on the measurement, first-order filter, backward Euler
+	    IF #Td > 0.0 THEN
+	        #tA := #Td / (#Td + #DerivFilterN * #CycleTime);
+	        #sD := #tA * #sD - #Gain * #DerivFilterN * #tA * (#Input - #sPvPrev);
+	    ELSE
+	        #sD := 0.0;
+	    END_IF;
+
+	    #tU0 := #tP + #sI + #sD;
+
+	    IF #ManualEnable THEN
+	        #tU := LIMIT(MN := #tOutLo, IN := #ManualValue, MX := 100.0);
+	        #sI := #tU - #tP - #sD;   // integral tracks the manual value
+	    ELSE
+	        #tU := LIMIT(MN := #tOutLo, IN := #tU0, MX := 100.0);
+	        IF #Ti > 0.0 THEN
+	            // integration plus back-calculation anti-windup
+	            #sI := #sI + #Gain * #CycleTime / #Ti * (#Setpoint - #Input) + #CycleTime / #tTt * (#tU - #tU0);
+	        ELSE
+	            #sI := 0.0;
+	        END_IF;
+	    END_IF;
+	END_REGION
+
+	REGION Split_range
+	    IF #tU >= #Deadband THEN
+	        #OutHeat := #tU;
+	        #OutCool := 0.0;
+	    ELSIF #tU <= -#Deadband THEN
+	        #OutHeat := 0.0;
+	        #OutCool := MIN(IN1 := -#tU / #tRatio, IN2 := 100.0);
+	    ELSE
+	        #OutHeat := 0.0;
+	        #OutCool := 0.0;
+	    END_IF;
+	    #Output := #tU;
+	    #sPvPrev := #Input;
+	END_REGION
+
+END_FUNCTION_BLOCK
