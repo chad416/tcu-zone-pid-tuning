@@ -26,7 +26,7 @@ VERSION : 0.1
       OutCool : Real;   // %
       Output : Real;   // %, heating-equivalent
       Qproc : Real;   // kW
-      Time : Real;   // s
+      ElapsedS : Real;   // s
       Done : Bool;
    END_VAR
 
@@ -73,6 +73,6 @@ BEGIN
 	#OutCool := #iPid.OutCool;
 	#Output := #iPid.Output;
 	#Qproc := #iScenario.Qproc;
-	#Time := #iScenario.Time;
+	#ElapsedS := #iScenario.ElapsedS;
 	#Done := #iScenario.Done;
 END_FUNCTION_BLOCK

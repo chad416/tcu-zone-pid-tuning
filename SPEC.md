@@ -72,5 +72,5 @@ Everything is simulated and generic. No data from any real machine is used.
 | F10 | `cli.py`, `tool.py` | `test_demo_fit_batch` | done |
 | F11 | `experiments.closed_loop`, `metrics.py`, `plc/FB_Scenario.scl` | `test_scenario_profile`, study | done |
 | V01 | `scl.py` | `test_scl_equivalence.py` | done |
-| V02 | `plc/*.scl`, `plc/tia/ZoneTest_OB_DB.scl` | TIA Portal compile | **open** |
+| V02 | `plc/*.scl`, `plc/tia/ZoneTest_OB_DB.scl`, `scripts/tia_build.ps1`, `scripts/tia_ob30.ps1` | TIA Portal V18, S7-1513-1 PN FW 2.9: 0 errors, 0 warnings (`results/tia_compile*.txt`, `docs/img/tia_FB_ZonePID.png`) | done 9 Nov 2026 |
 | V03 | `FB_ZoneTest` + OB30 | PLCSIM trace vs Python | **open** |

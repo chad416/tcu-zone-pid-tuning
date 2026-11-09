@@ -7,3 +7,5 @@ build/
 dist/
 results/study_log.txt
 data/
+results/tia_*_log.txt
+results/tia_xml/

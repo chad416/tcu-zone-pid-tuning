@@ -22,7 +22,7 @@ VERSION : 0.1
    VAR_OUTPUT
       Setpoint : Real;   // degC
       Qproc : Real;   // kW
-      Time : Real;   // s since restart
+      ElapsedS : Real;   // s since restart
       Done : Bool;   // TRUE once tEnd is reached
    END_VAR
 
@@ -36,23 +36,23 @@ BEGIN
 	    #sCount := 0;
 	END_IF;
 
-	#Time := DINT_TO_REAL(#sCount) * #CycleTime;
+	#ElapsedS := DINT_TO_REAL(#sCount) * #CycleTime;
 
-	IF #Time >= #tSpLow THEN
+	IF #ElapsedS >= #tSpLow THEN
 	    #Setpoint := #SpLow;
-	ELSIF #Time >= #tSpHigh THEN
+	ELSIF #ElapsedS >= #tSpHigh THEN
 	    #Setpoint := #SpHigh;
 	ELSE
 	    #Setpoint := #SpStart;
 	END_IF;
 
-	IF #Time >= #tLoadOn AND #Time < #tLoadOff THEN
+	IF #ElapsedS >= #tLoadOn AND #ElapsedS < #tLoadOff THEN
 	    #Qproc := #Qrun;
 	ELSE
 	    #Qproc := 0.0;
 	END_IF;
 
-	IF #Time < #tEnd THEN
+	IF #ElapsedS < #tEnd THEN
 	    #sCount := #sCount + 1;
 	    #Done := FALSE;
 	ELSE

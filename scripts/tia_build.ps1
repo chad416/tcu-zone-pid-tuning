@@ -1,7 +1,7 @@
 <#
   Build and compile the SCL blocks in TIA Portal through TIA Openness (SPEC V02).
 
-  STATUS: written, NOT YET RUN. Remove this line once it has produced a result.
+  Last run 9 Nov 2026: 0 errors, 0 warnings (results\tia_compile.txt).
 
   Needs: TIA Portal V18 with STEP 7 Professional (licence), the Windows user in the
   "Siemens TIA Openness" group, Windows PowerShell 5.1.
@@ -9,9 +9,8 @@
   Usage:  powershell -ExecutionPolicy Bypass -File scripts\tia_build.ps1 -OutDir C:\TIA_tcu
   Result: a TIA project with FB_ZonePID, FB_ZonePlant, FB_Scenario, FB_ZoneTest on an
           S7-1513 (6ES7 513-1AL02-0AB0), compiled; the compile messages are printed and
-          written to results\tia_compile.txt.  OB30 + DBs from plc\tia\ are added after a
-          Cyclic interrupt OB 30 has been created (TIA does not take the OB type from
-          an SCL source).
+          written to results\tia_compile.txt.  OB30 + DBs from plc\tia\ are added by
+          scripts\tia_ob30.ps1.
 #>
 param(
     [string]$OutDir = "C:\TIA_tcu",
@@ -55,8 +54,12 @@ public static class TcuBuild {
             foreach (var name in new[] { "FB_Scenario", "FB_ZonePID", "FB_ZonePlant", "FB_ZoneTest" }) {
                 var src = plc.ExternalSourceGroup.ExternalSources.CreateFromFile(
                     name, Path.Combine(plcDir, name + ".scl"));
-                src.GenerateBlocksFromSource();
-                sb.AppendLine("generated " + name);
+                try {
+                    src.GenerateBlocksFromSource();
+                    sb.AppendLine("generated " + name);
+                } catch (Exception ex) {
+                    sb.AppendLine("GENERATE FAILED " + name + ": " + (ex.InnerException ?? ex).Message);
+                }
             }
             var result = plc.GetService<ICompilable>().Compile();
             sb.AppendLine("COMPILE " + result.State + "  errors=" + result.ErrorCount + "  warnings=" + result.WarningCount);
@@ -70,13 +73,27 @@ public static class TcuBuild {
 }
 "@
 
-$apiDir = Split-Path -Parent $api
-[System.AppDomain]::CurrentDomain.add_AssemblyResolve({
-    param($sender, $e)
-    $n = (New-Object System.Reflection.AssemblyName($e.Name)).Name
-    $p = Join-Path $apiDir "$n.dll"
-    if (Test-Path $p) { [System.Reflection.Assembly]::LoadFrom($p) } else { $null }
-})
+# Assembly resolver in compiled C# (a PowerShell script-block handler recursed into a
+# StackOverflowException on the first run).
+$resolver = @"
+using System; using System.IO; using System.Reflection;
+public static class OpnResolve {
+    static string[] dirs;
+    public static void Init(string[] d) {
+        dirs = d;
+        AppDomain.CurrentDomain.AssemblyResolve += (s, e) => {
+            var n = new AssemblyName(e.Name).Name;
+            if (n.EndsWith(".resources")) return null;
+            foreach (var dir in dirs) { var p = Path.Combine(dir, n + ".dll"); if (File.Exists(p)) return Assembly.LoadFrom(p); }
+            return null;
+        };
+    }
+}
+"@
+Add-Type -TypeDefinition $resolver
+$portal = "C:\Program Files\Siemens\Automation\Portal $Version"
+[OpnResolve]::Init(@((Split-Path -Parent $api), "$portal\Bin\PublicAPI", "$portal\Bin"))
+New-Item -ItemType Directory -Force $OutDir | Out-Null
 [void][System.Reflection.Assembly]::LoadFrom($api)
 Add-Type -TypeDefinition $code -ReferencedAssemblies $api
 $text = [TcuBuild]::Run($OutDir, (Join-Path $root "plc"), $Cpu)

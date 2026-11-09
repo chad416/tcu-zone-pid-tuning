@@ -91,6 +91,18 @@ def tokenize(src: str) -> list[Tok]:
 
 ELEMENTARY = {"REAL", "INT", "DINT", "BOOL"}
 
+#: Names TIA Portal rejects as variable names (data types and keywords).  Found the
+#: hard way: an output called "Time" passed this translator but not the TIA compiler.
+RESERVED = {
+    "TIME", "LTIME", "S5TIME", "DATE", "TOD", "LTOD", "TIME_OF_DAY", "DT", "LDT", "DTL",
+    "DATE_AND_TIME", "STRING", "WSTRING", "CHAR", "WCHAR", "BYTE", "WORD", "DWORD", "LWORD",
+    "BOOL", "SINT", "INT", "DINT", "LINT", "USINT", "UINT", "UDINT", "ULINT", "REAL", "LREAL",
+    "ARRAY", "STRUCT", "VOID", "ANY", "POINTER", "VARIANT", "IF", "THEN", "ELSIF", "ELSE",
+    "END_IF", "CASE", "OF", "END_CASE", "FOR", "TO", "BY", "DO", "END_FOR", "WHILE",
+    "END_WHILE", "REPEAT", "UNTIL", "END_REPEAT", "EXIT", "CONTINUE", "RETURN", "GOTO",
+    "AND", "OR", "XOR", "NOT", "MOD", "TRUE", "FALSE", "VAR", "BEGIN", "REGION", "END_REGION",
+}
+
 
 @dataclass
 class VarDecl:
@@ -182,6 +194,8 @@ class Parser:
                 name_tok = self.next()
                 if name_tok.kind != "ident":
                     raise SclError(f"line {name_tok.line}: bad variable name {name_tok.text!r}")
+                if name_tok.up in RESERVED:
+                    raise SclError(f"line {name_tok.line}: {name_tok.text!r} is a reserved word in SCL")
                 self.expect(":")
                 typ, elem, lo, hi = self.parse_type()
                 init = None

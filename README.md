@@ -115,23 +115,47 @@ The output maps one-to-one onto the inputs of `FB_ZonePID`: `Gain`, `Ti`, `Td` a
 `python -c "from tcutune import scl; print(scl.generated_source(sorted(__import__('glob').glob('plc/*.scl'))))"`
 prints the Python that the translator makes from the SCL.
 
+### TIA Portal V18 compile (SPEC V02)
+
+The SCL files are built into a TIA Portal V18 project through TIA Openness. The target is
+an S7-1513-1 PN (FW 2.9), and the compile result is **0 errors, 0 warnings** for all
+blocks. That covers the four FBs, the two DBs, and `Cyclic_ZoneTest` as a real OB30
+cyclic interrupt at 100 ms. The logs are in [results/tia_compile.txt](results/tia_compile.txt)
+and [results/tia_compile_ob30.txt](results/tia_compile_ob30.txt).
+
+![FB_ZonePID in TIA Portal V18, compile 0 errors 0 warnings](docs/img/tia_FB_ZonePID.png)
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\tia_build.ps1 -OutDir C:\TIA_tcu          # FBs, compile
+powershell -ExecutionPolicy Bypass -File scripts\tia_ob30.ps1  -Project <path.ap18>         # OB30 + DBs, compile
+powershell -ExecutionPolicy Bypass -File scripts\tia_screenshot.ps1 -Project <path.ap18> -Out docs\img\tia_FB_ZonePID.png
+```
+
+The first TIA compile found what the translator had missed: an FB output named `Time`
+is a reserved word in SCL. It is now `ElapsedS`, and the translator rejects reserved
+names, with a test for it. Two Openness details are recorded in `tia_ob30.ps1`:
+- V18 has no `CreateOB`, and an OB generated from SCL source becomes a program-cycle
+  OB. The script exports it to SimaticML, switches it to a cyclic interrupt and
+  imports it back.
+- On that import V18 requires `CyclicTime ReadOnly="true"` and rejects `PhaseShift`.
+
 ## Tests
 
 ```bash
 python -m pytest -q
 ```
 
-There are 27 tests: plant, identification, tuning rules, controller behaviour, the CLI,
+There are 28 tests: plant, identification, tuning rules, controller behaviour, the CLI,
 and the SCL equivalence checks (V01).
 
 ## Limits
 
 - **Simulation only.** The zone model is plausible, not measured. The tool reads the
   same CSV a real test would produce, but has only seen simulated records.
-- **Not yet compiled in TIA Portal or run in S7-PLCSIM (SPEC V02, V03 open).** The SCL
-  is checked by this repo's own translator, which covers only the subset used here.
-  The TIA compiler is the authority, and this README will show its result once it has
-  run.
+- **Compiled in TIA Portal, not yet run in S7-PLCSIM (SPEC V03 open).** The PLCSIM
+  trace against the Python closed loop is the next step. Until then the runtime
+  behaviour of the SCL is checked by this repo's own translator, which covers only the
+  SCL subset used here.
 - **Relay test with a 0.1 K sensor.** The oscillation is under 1 K, and the 0.2 K
   hysteresis needed against noise shifts the measured point away from −180°. Ku comes
   out 34–62 % low and Pu 15–47 % high. Noise-free, the same code is within 8 % / 5 %.

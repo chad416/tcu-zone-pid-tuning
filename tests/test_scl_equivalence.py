@@ -117,6 +117,13 @@ def test_translator_rejects_unsupported():
                        '#b := 1.0;\nEND_FUNCTION_BLOCK'])
 
 
+def test_translator_rejects_reserved_names():
+    """TIA V18 rejected an output named 'Time' (first compile, 9 Nov 2026)."""
+    with pytest.raises(scl.SclError, match="reserved"):
+        scl.translate(['FUNCTION_BLOCK "X"\nVAR_OUTPUT Time : Real; END_VAR\nBEGIN\n'
+                       '#Time := 1.0;\nEND_FUNCTION_BLOCK'])
+
+
 def test_translator_integer_semantics():
     code, _ = scl.translate(['FUNCTION_BLOCK "X"\nVAR a : Int; b : Int; c : DInt; END_VAR\nBEGIN\n'
                              '#a := -7 / 2;\n#b := 32767 + 1;\n#c := -7 MOD 2;\nEND_FUNCTION_BLOCK'])

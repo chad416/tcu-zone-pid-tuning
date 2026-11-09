@@ -1,0 +1,16 @@
+﻿generated ZoneTest_OB_DB (ZoneCmd, iZoneTest, Cyclic_ZoneTest)
+compile before export: Success errors=0 warnings=0
+  Success  PLC_1  
+    Success  Program blocks  
+      Success  Cyclic_ZoneTest (OB123)  Block was successfully compiled.
+  Success    Compiling finished (errors: 0; warnings: 0)
+generated OB attributes: Number=123 SecondaryType=ProgramCycle 
+import OK with ReadOnly=true: Cyclic_ZoneTest_OB30_ro-true.xml
+imported Cyclic_ZoneTest number=30 type=OB SecondaryType=CyclicInterrupt CyclicTime=100000 us
+COMPILE Success  errors=0  warnings=0
+  Success  PLC_1  
+    Success  Program blocks  
+      Success  Cyclic_ZoneTest (OB30)  Block was successfully compiled.
+  Success    Compiling finished (errors: 0; warnings: 0)
+project: C:\TIA_tcu\tcu_zone_20261109_154022\tcu_zone_20261109_154022.ap18
+

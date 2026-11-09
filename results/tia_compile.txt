@@ -1,0 +1,15 @@
+﻿generated FB_Scenario
+generated FB_ZonePID
+generated FB_ZonePlant
+generated FB_ZoneTest
+COMPILE Success  errors=0  warnings=0
+  Success  PLC_1  
+    Success  Program blocks  
+      Success  FB_ZoneTest (FB4)  Block was successfully compiled.
+      Success  FB_Scenario (FB1)  Block was successfully compiled.
+      Success  FB_ZonePID (FB2)  Block was successfully compiled.
+      Success  FB_ZonePlant (FB3)  Block was successfully compiled.
+      Success  Main (OB1)  Block was successfully compiled.
+  Success    Compiling finished (errors: 0; warnings: 0)
+project: C:\TIA_tcu\tcu_zone_20261109_154022\tcu_zone_20261109_154022.ap18
+
