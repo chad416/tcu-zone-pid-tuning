@@ -2,25 +2,35 @@
 
 Two lumped thermal masses:
 
-* the circulating water (heater, cooling valve, pipes)        -> temperature Tw
-* the machine part the water flows through (barrel, roll...)  -> temperature Tm
+* the circulating water of the closed primary circuit   -> temperature Tw
+* the machine part the water flows through (barrel, screw, head, mixer wall)
+                                                          -> temperature Tm
 
     Cw * dTw/dt = Ph - Pc + UAwm * (Tm - Tw)
     Cm * dTm/dt = UAwm * (Tw - Tm) - UAloss * (Tm - Tamb) + Qproc
 
-    Ph = heat/100 * Pheat_max                     (electric heater, linear)
-    Pc = cool/100 * kcool * max(Tw - Tcw, 0)      (cooling valve, bilinear)
+    Ph = heat/100 * Pheat_max                   (electric heater, linear)
+    Pc = G(cool) * max(Tw - Tcw, 0)             (cooling)
+
+G(cool) is the cooling conductance in kW/K.  For a plate heat exchanger in the
+closed primary circuit (hx_UA > 0) it is eps*Cmin from effectiveness-NTU with
+the valve characteristic in front of it (physics.hx_conductance); with
+hx_UA = 0 it is the bilinear "direct cooling" law cool/100 * kcool.  Either
+way Pc is linear in Tw for a fixed valve, so the steady state stays a linear
+solve.
 
 The measured temperature is either Tw or Tm, delayed by a transport dead time L
 and filtered by a first-order sensor lag tau_s.  Qproc is the heat the process
-puts into the machine part (friction heat while the machine runs).
+puts into the machine part (viscous heating of the compound while it runs).
 
 Integration is explicit Euler with the controller sample time (default 0.1 s);
 the fastest mode of every preset is > 20 s, so Euler at 0.1 s is accurate to
-well below the sensor resolution (checked in tests/test_plant.py).
+well below the sensor resolution (checked in tests).
 
-Everything here is a generic, invented zone.  The parameter values are
-plausible orders of magnitude for a water TCU, not data from any real machine.
+The presets are derived in physics.py from the hardware (heater, pump, hoses,
+exchanger, channel geometry, steel mass) with textbook heat-transfer relations.
+The hardware values themselves are sizing assumptions for this machine class,
+not data from a real line.
 """
 
 from __future__ import annotations
@@ -29,6 +39,8 @@ from dataclasses import dataclass, field, replace
 from typing import Callable
 
 import numpy as np
+
+from . import physics
 
 
 @dataclass(frozen=True)
@@ -48,18 +60,38 @@ class ZoneParams:
     noise_std: float = 0.0  # K      white measurement noise
     resolution: float = 0.0  # K      quantisation (0 = none), e.g. 0.1
     q_run: float = 9.0  # kW     process heat while the machine runs (puts the zone in cooling)
+    # plate heat exchanger in the closed primary circuit (hx_UA = 0: direct cooling, kcool)
+    hx_UA: float = 0.0  # kW/K   overall UA at full cooling-water flow
+    Cs_max: float = 1.0  # kW/K   cooling-water capacity rate at full flow
+    Cp: float = 2.7  # kW/K   primary (pump) capacity rate
+    valve_R: float = 0.0  # 0 linear (PWM solenoid), > 1 equal-percentage rangeability
 
 
-#: Four invented zones of different size and dynamics ("similar TCUs").
-PRESETS: dict[str, ZoneParams] = {
-    "A": ZoneParams("A"),
-    "B": ZoneParams("B", Cw=42.0, Cm=90.0, UAwm=0.8, UAloss=0.09, Pheat_max=9.0,
-                    kcool=0.35, L=6.0, tau_s=3.0, q_run=7.0),
-    "C": ZoneParams("C", Cw=84.0, Cm=260.0, UAwm=1.4, UAloss=0.18, Pheat_max=18.0,
-                    kcool=0.8, L=12.0, tau_s=5.0, sensor="metal", q_run=14.0),
-    "D": ZoneParams("D", Cw=105.0, Cm=420.0, UAwm=2.0, UAloss=0.22, Pheat_max=24.0,
-                    kcool=1.1, L=15.0, tau_s=6.0, q_run=17.0),
-}
+def from_design(d: physics.ZoneDesign) -> ZoneParams:
+    """Lumped parameters from the hardware description (physics.derive)."""
+    q = physics.derive(d).params
+    return ZoneParams(d.name, Cw=q["Cw"], Cm=q["Cm"], UAwm=q["UAwm"], UAloss=q["UAloss"],
+                      Pheat_max=q["Pheat_max"], kcool=0.0, Tcw=q["Tcw"], L=q["L"],
+                      tau_s=q["tau_s"], sensor=d.sensor, q_run=q["q_run"], hx_UA=q["hx_UA"],
+                      Cs_max=q["Cs_max"], Cp=q["Cp"], valve_R=q["valve_R"])
+
+
+#: Four zones of a rubber-compound line served by similar TCUs (physics.PRESET_DESIGNS).
+PRESETS: dict[str, ZoneParams] = {k: from_design(d) for k, d in physics.PRESET_DESIGNS.items()}
+
+
+def cool_conductance(p: ZoneParams, cool: float) -> float:
+    """G(cool) in kW/K: heat removed = G * (Tw - Tcw)."""
+    cool = min(max(cool, 0.0), 100.0)
+    if p.hx_UA <= 0.0:
+        return cool / 100.0 * p.kcool
+    return physics.hx_conductance(physics.valve_fraction(cool, p.valve_R), p.hx_UA, p.Cs_max, p.Cp)
+
+
+def cool_conductance_slope(p: ZoneParams, cool: float, h: float = 0.25) -> float:
+    """dG/d(cool) in kW/K per %, central difference (one-sided at the ends)."""
+    lo, hi = max(cool - h, 0.0), min(cool + h, 100.0)
+    return (cool_conductance(p, hi) - cool_conductance(p, lo)) / (hi - lo)
 
 
 def with_noise(p: ZoneParams, std: float = 0.05, resolution: float = 0.1) -> ZoneParams:
@@ -93,7 +125,7 @@ class Zone:
         """Solve the static balance for (Tw, Tm) with fixed actuator outputs."""
         p = self.p
         # Linear in (Tw, Tm) because Pc is linear in Tw when Tw > Tcw.
-        a = cool / 100.0 * p.kcool
+        a = cool_conductance(p, cool)
         # 0 = Ph - a*(Tw - Tcw) + UAwm*(Tm - Tw)
         # 0 = UAwm*(Tw - Tm) - UAloss*(Tm - Tamb) + Qproc
         Ph = heat / 100.0 * p.Pheat_max
@@ -109,13 +141,16 @@ class Zone:
                                delay=np.full(self.n_delay, y, dtype=float))
 
     # -- one step -------------------------------------------------------------
-    def step(self, heat: float, cool: float, Qproc: float = 0.0) -> float:
-        """Advance one sample with actuator outputs in percent; return PV in degC."""
+    def step(self, heat: float, cool: float, Qproc: float = 0.0,
+             Tcw: float | None = None) -> float:
+        """Advance one sample with actuator outputs in percent; return PV in degC.
+        Tcw overrides the cooling-water temperature of the preset (seasons)."""
         p, s, Ts = self.p, self.state, self.Ts
         heat = min(max(heat, 0.0), 100.0)
         cool = min(max(cool, 0.0), 100.0)
+        tcw = p.Tcw if Tcw is None else Tcw
         Ph = heat / 100.0 * p.Pheat_max
-        Pc = cool / 100.0 * p.kcool * max(s.Tw - p.Tcw, 0.0)
+        Pc = cool_conductance(p, cool) * max(s.Tw - tcw, 0.0)
         dTw = (Ph - Pc + p.UAwm * (s.Tm - s.Tw)) / p.Cw
         dTm = (p.UAwm * (s.Tw - s.Tm) - p.UAloss * (s.Tm - p.Tamb) + Qproc) / p.Cm
         s.Tw += Ts * dTw
@@ -140,13 +175,13 @@ def linear_frf(p: ZoneParams, w: np.ndarray, actuator: str = "heat",
 
     Only available in simulation; used to check the tools against the truth.
     """
-    a_c = cool0 / 100.0 * p.kcool  # kW/K extra loss through the open valve
+    a_c = cool_conductance(p, cool0)  # kW/K extra loss through the open valve
     A = np.array([[-(p.UAwm + a_c) / p.Cw, p.UAwm / p.Cw],
                   [p.UAwm / p.Cm, -(p.UAwm + p.UAloss) / p.Cm]])
     if actuator == "heat":
         B = np.array([p.Pheat_max / 100.0 / p.Cw, 0.0])
     else:  # more valve -> more heat removed -> PV falls (negative gain)
-        B = np.array([-p.kcool * max(Tw0 - p.Tcw, 0.0) / 100.0 / p.Cw, 0.0])
+        B = np.array([-cool_conductance_slope(p, cool0) * max(Tw0 - p.Tcw, 0.0) / p.Cw, 0.0])
     C = np.array([1.0, 0.0]) if p.sensor == "water" else np.array([0.0, 1.0])
     s = 1j * np.asarray(w)
     out = np.empty(len(s), dtype=complex)

@@ -1,5 +1,5 @@
 <#
-  Build and compile the SCL blocks in TIA Portal through TIA Openness (SPEC V02).
+  Build and compile the SCL blocks in TIA Portal through TIA Openness (SPS-361, DOSSIER section 11).
 
   Last run 9 Nov 2026: 0 errors, 0 warnings (results\tia_compile.txt).
 
@@ -7,7 +7,7 @@
   "Siemens TIA Openness" group, Windows PowerShell 5.1.
 
   Usage:  powershell -ExecutionPolicy Bypass -File scripts\tia_build.ps1 -OutDir C:\TIA_tcu
-  Result: a TIA project with FB_ZonePID, FB_ZonePlant, FB_Scenario, FB_ZoneTest on an
+  Result: a TIA project with FB_ZonePID, FB_CoolLinearise, FB_ZonePlant, FB_Scenario, FB_ZoneTest on an
           S7-1513 (6ES7 513-1AL02-0AB0), compiled; the compile messages are printed and
           written to results\tia_compile.txt.  OB30 + DBs from plc\tia\ are added by
           scripts\tia_ob30.ps1.
@@ -51,7 +51,7 @@ public static class TcuBuild {
                 if (sc != null && sc.Software is PlcSoftware) { plc = (PlcSoftware)sc.Software; break; }
             }
             if (plc == null) throw new Exception("no PLC software in " + cpu);
-            foreach (var name in new[] { "FB_Scenario", "FB_ZonePID", "FB_ZonePlant", "FB_ZoneTest" }) {
+            foreach (var name in new[] { "FB_Scenario", "FB_ZonePID", "FB_CoolLinearise", "FB_ZonePlant", "FB_ZoneTest" }) {
                 var src = plc.ExternalSourceGroup.ExternalSources.CreateFromFile(
                     name, Path.Combine(plcDir, name + ".scl"));
                 try {

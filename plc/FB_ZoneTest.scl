@@ -1,8 +1,8 @@
 FUNCTION_BLOCK "FB_ZoneTest"
-TITLE = Closed-loop test harness: scenario -> FB_ZonePID -> FB_ZonePlant
+TITLE = Closed-loop test harness: scenario -> FB_ZonePID -> FB_CoolLinearise -> FB_ZonePlant
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : chad416
-VERSION : 0.1
+VERSION : 0.2
 //  Call from a cyclic interrupt OB every CycleTime (OB30, 100 ms).
 //  Order per call: scenario, controller (uses last Pv), plant (returns new Pv).
 //  Restart = TRUE for one call starts the run from a cold zone (25 degC).
@@ -17,6 +17,10 @@ VERSION : 0.1
       CoolGainRatio : Real := 1.0;
       Manual : Bool;
       ManualValue : Real;   // %
+      LinMode : Int := 0;   // FB_CoolLinearise mode: 0 off, 1 Tw-Tcw scaling, 2 model inversion
+      Tcw : Real := 15.0;   // degC, cooling-water supply
+      FfGain : Real := 0.0;   // %/kW, feedforward from the process power (0 = off)
+      FfTime : Real := 0.0;   // s, feedforward lag
    END_VAR
 
    VAR_OUTPUT
@@ -33,8 +37,10 @@ VERSION : 0.1
    VAR
       iScenario : "FB_Scenario";
       iPid : "FB_ZonePID";
+      iLin : "FB_CoolLinearise";
       iPlant : "FB_ZonePlant";
       sPv : Real := 25.0;
+      sTwMeas : Real := 25.0;   // TCU water sensor, 2 s lag
    END_VAR
 
 
@@ -44,6 +50,7 @@ BEGIN
 
 	IF #Restart THEN
 	    #sPv := 25.0;
+	    #sTwMeas := 25.0;
 	END_IF;
 
 	#iPid(Setpoint := #iScenario.Setpoint,
@@ -56,21 +63,31 @@ BEGIN
 	      Td := #Td,
 	      SpWeight := #SpWeight,
 	      CoolGainRatio := #CoolGainRatio,
-	      CycleTime := #CycleTime);
+	      CycleTime := #CycleTime,
+	      FeedForward := -#FfGain * #iScenario.Qproc,
+	      FfTime := #FfTime,
+	      CoolSaturated := #iLin.Saturated);
+
+	#iLin(CoolIn := #iPid.OutCool,
+	      Mode := #LinMode,
+	      Tw := #sTwMeas,
+	      Tcw := #Tcw);
 
 	#iPlant(Heat := #iPid.OutHeat,
-	        Cool := #iPid.OutCool,
+	        Cool := #iLin.Valve,
 	        Qproc := #iScenario.Qproc,
 	        Init := #Restart,
 	        InitTemp := 25.0,
+	        Tcw := #Tcw,
 	        CycleTime := #CycleTime);
 
 	#sPv := #iPlant.Pv;
+	#sTwMeas := #sTwMeas + #CycleTime / (2.0 + #CycleTime) * (#iPlant.Tw - #sTwMeas);
 
 	#Setpoint := #iScenario.Setpoint;
 	#Pv := #sPv;
 	#OutHeat := #iPid.OutHeat;
-	#OutCool := #iPid.OutCool;
+	#OutCool := #iLin.Valve;
 	#Output := #iPid.Output;
 	#Qproc := #iScenario.Qproc;
 	#ElapsedS := #iScenario.ElapsedS;

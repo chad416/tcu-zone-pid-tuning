@@ -1,5 +1,5 @@
 <#
-  Evidence for SPEC V02: open the built project in TIA Portal WITH its user interface,
+  Evidence for SPS-361: open the built project in TIA Portal WITH its user interface,
   show a block in the editor, compile, and save a PNG of the TIA window.
 
   Usage: powershell -ExecutionPolicy Bypass -File scripts\tia_screenshot.ps1 -Project <path.ap18> -Block FB_ZonePID -Out docs\img\tia_FB_ZonePID.png

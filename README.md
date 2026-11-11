@@ -1,181 +1,136 @@
 # tcu-zone-pid-tuning
 
-Identification and PI tuning for the zones of a heating/cooling **temperature
-control unit (TCU)**, with the controller written as a **Siemens SCL function
-block** and the SCL source executed and checked against a Python reference.
+This project tunes the zones of a heating/cooling **temperature control unit (TCU)** on a
+rubber-compound line (cold-feed extruder barrel and screw, extruder head, internal-mixer wall) and
+answers why such zones behave badly only *in some cases*. The zone model is derived from the
+hardware with textbook heat transfer (closed primary water circuit, plate heat exchanger by
+effectiveness-NTU, cooling-water valve), the tuning tool works from three short technician tests, and
+the controller is Siemens **SCL** compiled in **TIA Portal V18**. The work is laid out as a
+systems-engineering dossier that follows Wasson's spine.
 
-Everything here runs on **simulated zones**. No data from a real machine is used.
-See [SPEC.md](SPEC.md) for the requirements and their test status.
+- **Read first:** [DOSSIER.md](DOSSIER.md) ([PDF](docs/DOSSIER.pdf)): need, ConOps, modes,
+  requirements, architecture, interfaces, budgets, M&S, FMEA, trade study, V&V and line-trial plan.
+- **Numbers:** [results/study.md](results/study.md) and [results/aoa.md](results/aoa.md).
+- **Traceability:** [TRACEABILITY.md](TRACEABILITY.md).
+- **Data:** everything here is **simulation**. No data from a real TCU, no PLCSIM run. Every
+  parameter is tagged std / derived / assumed ([DOSSIER §8.2](DOSSIER.md)).
 
-![Zone A production scenario](docs/img/scenario_zoneA.png)
+**Question.** A split-range PI per zone, tuned at one test point, holds well at some operating
+conditions and oscillates or responds slowly at others. What moves under the controller, and what is
+the smallest change that keeps one tuning robust over the whole operating envelope (setpoint
+50–90 °C, process load 0.5–1.5 ×, cooling water 8–30 °C over the year, exchanger clean to fouled)?
 
-## What it does
+**Alternatives for the cooling path.** A one gain set for heating and cooling; B static gain ratio;
+C ratio taken at the loop's crossover frequency (this tool, v0.1); D C plus scaling by Tw − Tcw;
+E C plus an inversion of the valve + plate-exchanger model in the PLC (`FB_CoolLinearise`, v0.2).
 
-1. **Simulates a TCU zone** (`src/tcutune/plant.py`). The model has two thermal
-   masses: the circulating water and the machine part. It has an electric heater, a
-   cooling valve whose effect grows with (water − cooling-water) temperature, transport
-   dead time, sensor lag, 0.05 K noise and 0.1 K resolution. There are four preset
-   zones of different size.
-2. **Records the tests a technician would run on the machine**: a heater step, a
-   cooling-valve step while the process puts heat in, and a relay test. They are
-   saved as plain CSV.
-3. **Identifies the zone** (`identify.py`) with a FOPDT model (two-point and least
-   squares) and a five-parameter lead-lag model with dead time.
-4. **Tunes the loop** (`tuning.py`, `tool.py`). It applies Ziegler–Nichols, SIMC, lambda,
-   AMIGO, Tyreus–Luyben (relay), and SIMC on the lead-lag model with τc chosen so
-   that **Ms ≤ 1.4**. Every candidate is reported with its robustness in the heating
-   and the cooling range.
-5. **Runs the controller as SCL.** `plc/FB_ZonePID.scl` is a split-range heat/cool PI(D)
-   with setpoint weighting, filtered derivative on the measurement, back-calculation
-   anti-windup, bumpless manual/auto and a `CoolGainRatio` input. `FB_ZonePlant`,
-   `FB_Scenario` and `FB_ZoneTest` let the whole loop run in S7-PLCSIM with no
-   hardware.
-6. **Checks the SCL in CI.** `src/tcutune/scl.py` translates the SCL subset used here
-   into Python with S7 data types (Real = IEEE float32). The tests run the **same source
-   text** that goes into TIA Portal and compare it with the Python reference.
-   `FB_ZonePID` is bit-exact.
+![Robustness over the envelope](docs/img/envelope_ms.png)
 
-## Results (from `scripts/run_study.py`, full tables in [results/study.md](results/study.md))
+## Findings
 
-**1. Textbook FOPDT rules fail on three of the four zones.** On zones where the sensor
-is in the water (A, B, D), the fast water loop hides the dead time. The least-squares
-FOPDT fit returns L = 0 s, and ZN, SIMC and AMIGO would give infinite gain. The tool
-reports these rules as *not applicable* instead of printing numbers. The lead-lag fit
-recovers the dead time (zone A: 11.5 s against a true 8 s transport delay plus 4 s
-sensor lag) and halves the fit error (0.058 K vs 0.123 K RMSE).
+Simulation of four zones (extruder barrel, extruder screw, extruder head with the sensor in the steel,
+internal-mixer wall) with noise and 0.1 K resolution. Each zone is tuned by the tool from simulated
+technician tests at one test point (80 °C, full process load, cooling water 15 °C), then checked on the
+true linearised plant at about 150 operating points per zone, clean and fouled, and in the time domain
+at a winter and a summer corner.
 
-![Identification](docs/img/identification_zoneA.png)
+1. **"In some cases" is the cooling path moving under the controller.** Near the loop's crossover
+   frequency the cooling-path gain changes by a factor of **13.7–25** over the envelope on zones with a
+   linear (PWM solenoid) valve, and **3.5–3.6** on zones with an equal-percentage valve
+   (Tw − Tcw 13–82 K, valve 2–96 %). The heating path does not move. Two causes, both physical: the
+   heat removed scales with Tw − Tcw (setpoint and cooling-water season), and the plate exchanger's
+   effectiveness-NTU curve bends the valve characteristic.
 
-**2. One set of gains for heating and cooling loses its robustness in cooling.** The
-cooling valve is 2.5–2.9 times stronger than the heater around the loop's crossover
-frequency. On the true linearised plant, the recommended PI has Ms 1.35–1.42 in
-heating, but **2.2–3.8 in cooling** if the cooling output is not scaled.
+   ![Cooling-path gain over the envelope](docs/img/cooling_gain_spread.png)
 
-| Zone | Ms heating | Ms cooling, ratio 1 | Ms cooling, static Kcool/Kheat | Ms cooling, crossover ratio (tool) |
-|---|---|---|---|---|
-| A | 1.35 | 2.62 | 1.59 | **1.36** |
-| B | 1.39 | 2.65 | 1.68 | **1.39** |
-| C | 1.42 | 2.19 | 1.63 | **1.40** |
-| D | 1.38 | 3.76 | 1.70 | **1.39** |
+2. **One gain set limit-cycles; the "obvious" fix makes it worse.**
+   - **One gain set (A):** Ms > 2 at **53–86 %** of the envelope points. At the test point zone A
+     already limit-cycles: 707 heater/valve switchovers in a 3.3 h run, valve slamming 0–100 %.
+   - **Static gain ratio (B):** on the equal-percentage zones the identified static ratio is below 1
+     (0.49 and 0.75), because the open valve also adds conductance and lowers the static gain, while
+     at crossover the cooling path is 2.4–2.6 × stronger. Ms > 2 at **84–99 %** of points there.
+3. **The crossover ratio (C, this tool's v0.1) is never unstable but becomes slow.** Ms stays at
+   **1.02–1.70** everywhere, but 9–39 % of the points sit below Ms 1.2 (sluggish), and in the summer
+   corner the load-step peak grows to **2.9 K** on zones A and B (1.2–1.6 K at the test point).
+4. **Inverting the valve + exchanger model in the PLC (E, v0.2) holds one tuning everywhere.**
+   - **Robustness:** Ms **1.36–1.41** at every envelope point of every zone with a clean exchanger;
+     **1.19–1.33** when it is fouled (Rf 0.000176 m²K/W, the model left clean): fouling only makes it
+     more cautious.
+   - **Corners:** load-step peaks 1.4–1.7 K (A), 0.9–1.1 K (B), 1.8–2.2 K (D), against up to 2.9 / 2.9 /
+     4.2 K for C.
+   - **Cost:** one cooling-water Pt100 per TCU and the nameplate data of the exchanger and valve.
+     Scaling by Tw − Tcw alone (D) is enough for linear valves but not for equal-percentage ones
+     (Ms up to 3.35).
+   - **A defect it exposed:** when the linearised valve saturates before the PID's own limit, the PID
+     winds up; the summer setpoint drop overshot by 1.6–1.8 K. Conditional integration from the block's
+     `Saturated` flag brought it to 0.2–0.4 K.
 
-![Ms in cooling](docs/img/ms_cooling.png)
+   ![Winter and summer corners, zone B](docs/img/corners_zoneB.png)
 
-The static gain ratio is not enough. The open valve also shortens the slow time
-constant, so around crossover the cooling path is relatively stronger than its static
-gain says. The tool therefore takes the ratio at the gain-crossover frequency. With that
-ratio, Ms in cooling matches Ms in heating to within 0.04 on all four zones.
+5. **Feedforward from the process power is the lever that tuning cannot replace.**
+   - **Mixer wall (D):** at a 150 s batch cycle the loop *amplifies* the load (|S| = 1.25; |S| > 1 for
+     periods of 38–224 s). Feedforward from the rotor power halves the ripple, 0.8 → 0.4 K peak-to-peak,
+     and with a ±30 % wrong gain it is still 0.4–0.5 K.
+   - **Head zone (C), sensor in the steel:** no cooling option meets the 2 K load-step limit (peak
+     6.5 K with E), because the load enters the steel where the sensor sits. Feedforward brings it to
+     **2.6 K** (2.3–3.4 K with ±30 % gain error); a cascade on the water temperature is the next step.
 
-In the time domain it shows up when the setpoint steps down while the process load
-forces cooling. In zone A the overshoot drops from 1.5 K to 0.6 K:
+   ![Batch load and feedforward](docs/img/batch_feedforward.png)
 
-![Setpoint step in the cooling range](docs/img/cooling_sp_down_zoneA.png)
+6. **Trade study:** E 80.2, C 77.4, D 43.9, B 35.5, A 33.7 (weighted figure of merit). The margin is
+   small: C wins if cost weighs 27 of 100 or more, or if the sensor and engineering cost doubles.
+   So: **C now on every zone (no hardware), E where the cooling water swings with the season or the
+   valves are equal-percentage.**
+7. **Identification (from v0.1, still true):** with the sensor in the water the FOPDT fit finds no dead
+   time (L = 0 s on three zones), so ZN, SIMC and AMIGO would give infinite gain; the tool refuses them
+   and fits a lead-lag model with dead time (RMSE 0.057–0.058 K vs 0.121–0.160 K).
 
-**3. The trade-off, stated plainly.** Without scaling, the loop has more gain in cooling,
-so it rejects the load-on disturbance slightly better (zone A load IAE 459 vs 540 K·s).
-It pays for that with Ms 2.6 and the oscillation above. Lambda tuning with λ = T is very
-robust (Ms 1.01) but far too slow for this load: the peak is 25–28 K.
+   ![Identification](docs/img/identification_zoneA.png)
 
-## The tool
+8. **PLC fit.** `FB_ZonePID`, `FB_CoolLinearise`, the simulation FBs, the DBs and OB30 at 100 ms
+   compile in TIA Portal V18 (CPU 1513-1 PN) with **0 errors and 0 warnings**. Upper-bound cost
+   0.64 ms per zone per cycle (16 model evaluations with EXP/LN). The compiler found one more thing:
+   `100.0 * 0.5 * (...)` is folded into an LReal constant and draws an "accuracy may be lost" warning.
+
+   ![FB_CoolLinearise in TIA Portal V18](docs/img/tia_FB_CoolLinearise.png)
+
+**What is not done:** PLCSIM (the S7-PLCSIM V18 installer is on the PC, but it stops on a pending
+Windows restart), execution time on a real CPU, any real TCU. The line-trial plan is in
+[DOSSIER §11.3](DOSSIER.md).
+
+## What is in the repo
+
+| Path | Content |
+|---|---|
+| `src/tcutune/physics.py` | Zone parameters from hardware: water properties, Gnielinski film coefficient, steel conduction, ε-NTU plate exchanger, valve characteristics, transport delay |
+| `src/tcutune/plant.py` | Two-mass zone simulator (water circuit + machine part), split range, exchanger cooling, dead time, sensor lag, noise |
+| `src/tcutune/identify.py`, `tuning.py`, `tool.py`, `cli.py` | Identification (FOPDT, lead-lag with dead time, relay), tuning rules with Ms check, crossover cooling ratio, the `tcu-tune` CLI |
+| `src/tcutune/linearise.py` | Reference model of `FB_CoolLinearise` (modes 0/1/2) |
+| `src/tcutune/envelope.py` | Linearisation of the true plant at any operating point, Ms over the envelope, fouling |
+| `src/tcutune/scl.py` | Translator that runs the SCL in Python with float32 Real (CI runs the exact TIA source) |
+| `plc/FB_ZonePID.scl` | Split-range PI(D): setpoint weight, filtered D, back-calculation and conditional anti-windup, bumpless manual, lagged feedforward |
+| `plc/FB_CoolLinearise.scl` | Cooling demand → valve: Tw − Tcw scaling or valve + exchanger model inversion (bisection), Tcw fault hold |
+| `plc/FB_ZonePlant.scl`, `FB_Scenario.scl`, `FB_ZoneTest.scl`, `plc/tia/` | The zone simulated inside the PLC for PLCSIM; OB30 (100 ms) and DBs |
+| `scripts/run_study.py`, `scripts/aoa.py` | Whole study → `results/`, `docs/img/`; trade study → `results/aoa.md` |
+| `scripts/tia_*.ps1`, `scripts/export_pdf.py` | TIA Openness build, OB30 conversion, screenshot; DOSSIER.md → PDF |
+
+## Run it
 
 ```bash
 pip install -e .[test]
-tcu-tune demo data                                   # simulated records for zones A-D
-tcu-tune fit --heat data/A/heat.csv --cool data/A/cool.csv --relay data/A/relay.csv --zone A
-tcu-tune batch data --out results/recommended.csv    # every zone folder, one summary
+python -m pytest -q                       # physics, plant, tool, SCL equivalence in float32
+tcu-tune nameplate --zone A               # FB_CoolLinearise settings from the TCU hardware
+tcu-tune demo data --lin 2                # simulated technician tests (cooling through the linearisation)
+tcu-tune batch data --out results/recommended.csv
+python scripts/run_study.py               # about 40 min on a laptop; --quick for a smoke run
+python scripts/aoa.py
 ```
-
-```text
-Zone A
-  FOPDT     K=1.098 K/%  T=1625 s  L=0.0 s  (rmse 0.124 K)
-  lead-lag  K=1.121 K/%  T1=1795 s  T2=48.0 s  Ta=138.1 s  L=10.0 s  (rmse 0.057 K)
-  cooling   K=-2.032 K/%  T1=1233 s  T2=44.2 s  L=10.4 s  (static Kcool/Kheat = 1.81; ...)
-  relay     Ku=47.45 %/K  Pu=58 s  (38 cycles)
-  rule          Gain %/K     Ti s   Td s CoolRatio  Ms heat  Ms cool  note
-  zn_step              -        -      -         -        -        -  not applicable: L/T = 0.0000 < 0.01 ...
-  simc_pi              -        -      -         -        -        -  not applicable: ...
-  lambda_pi         0.91   1625.0    0.0      2.14     1.01     1.02  FOPDT fit
-  amigo_pi             -        -      -         -        -        -  not applicable: ...
-  tl_pi            14.83    128.0    0.0      2.68     1.25     1.26  relay test
- *simc_ms1.4       21.23    104.8    0.0      2.73     1.39     1.41  lead-lag model, tau_c = 16.2 s
-```
-
-The output maps one-to-one onto the inputs of `FB_ZonePID`: `Gain`, `Ti`, `Td` and
-`CoolGainRatio`.
-
-## The PLC side
-
-| Block | Purpose |
-|---|---|
-| `plc/FB_ZonePID.scl` | the controller (F08), float32 reference in `src/tcutune/pid.py` |
-| `plc/FB_ZonePlant.scl` | the zone model for PLCSIM (simulation only) |
-| `plc/FB_Scenario.scl` | the production test profile |
-| `plc/FB_ZoneTest.scl` | scenario → controller → plant, in OB call order |
-| `plc/tia/ZoneTest_OB_DB.scl` | OB30 (100 ms) and the DBs, TIA only |
-
-`python -c "from tcutune import scl; print(scl.generated_source(sorted(__import__('glob').glob('plc/*.scl'))))"`
-prints the Python that the translator makes from the SCL.
-
-### TIA Portal V18 compile (SPEC V02)
-
-The SCL files are built into a TIA Portal V18 project through TIA Openness. The target is
-an S7-1513-1 PN (FW 2.9), and the compile result is **0 errors, 0 warnings** for all
-blocks. That covers the four FBs, the two DBs, and `Cyclic_ZoneTest` as a real OB30
-cyclic interrupt at 100 ms. The logs are in [results/tia_compile.txt](results/tia_compile.txt)
-and [results/tia_compile_ob30.txt](results/tia_compile_ob30.txt).
-
-![FB_ZonePID in TIA Portal V18, compile 0 errors 0 warnings](docs/img/tia_FB_ZonePID.png)
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File scripts\tia_build.ps1 -OutDir C:\TIA_tcu          # FBs, compile
-powershell -ExecutionPolicy Bypass -File scripts\tia_ob30.ps1  -Project <path.ap18>         # OB30 + DBs, compile
-powershell -ExecutionPolicy Bypass -File scripts\tia_screenshot.ps1 -Project <path.ap18> -Out docs\img\tia_FB_ZonePID.png
+powershell -ExecutionPolicy Bypass -File scripts\tia_build.ps1 -OutDir C:\TIA_tcu
+powershell -ExecutionPolicy Bypass -File scripts\tia_ob30.ps1  -Project <path.ap18>
+powershell -ExecutionPolicy Bypass -File scripts\tia_screenshot.ps1 -Project <path.ap18> -Block FB_CoolLinearise -Out docs\img\tia_FB_CoolLinearise.png
 ```
-
-The first TIA compile found what the translator had missed: an FB output named `Time`
-is a reserved word in SCL. It is now `ElapsedS`, and the translator rejects reserved
-names, with a test for it. Two Openness details are recorded in `tia_ob30.ps1`:
-- V18 has no `CreateOB`, and an OB generated from SCL source becomes a program-cycle
-  OB. The script exports it to SimaticML, switches it to a cyclic interrupt and
-  imports it back.
-- On that import V18 requires `CyclicTime ReadOnly="true"` and rejects `PhaseShift`.
-
-## Tests
-
-```bash
-python -m pytest -q
-```
-
-There are 28 tests: plant, identification, tuning rules, controller behaviour, the CLI,
-and the SCL equivalence checks (V01).
-
-## Limits
-
-- **Simulation only.** The zone model is plausible, not measured. The tool reads the
-  same CSV a real test would produce, but has only seen simulated records.
-- **Compiled in TIA Portal, not yet run in S7-PLCSIM (SPEC V03 open).** The PLCSIM
-  trace against the Python closed loop is the next step. Until then the runtime
-  behaviour of the SCL is checked by this repo's own translator, which covers only the
-  SCL subset used here.
-- **Relay test with a 0.1 K sensor.** The oscillation is under 1 K, and the 0.2 K
-  hysteresis needed against noise shifts the measured point away from −180°. Ku comes
-  out 34–62 % low and Pu 15–47 % high. Noise-free, the same code is within 8 % / 5 %.
-  The bias makes Tyreus–Luyben settings conservative, which is safe but slow.
-- **One cooling ratio per zone.** The cooling gain grows with water temperature and
-  valve opening. The ratio is measured at one operating point (80 °C, process load on).
-- **Record quality changes the answer.** Zone A tuned from 1 s / 0.01 K CSV gives
-  Gain 21.2 %/K. Tuned from the 0.1 s in-memory record it gives 17.4 %/K. Both meet
-  Ms ≤ 1.4 on their own fitted model.
-- **Continuous outputs.** There is no heater PWM and no valve stiction or hysteresis.
-- **Long step tests.** The slow zones need about 90 minutes of heater step to see the
-  final value.
-
-## References
-
-- K. J. Åström, T. Hägglund, *Advanced PID Control*, ISA, 2006 (Ms, anti-windup, AMIGO, relay feedback).
-- S. Skogestad, "Simple analytic rules for model reduction and PID controller tuning", *J. Process Control* 13 (2003) 291–309 (SIMC, model reduction).
-- K. J. Åström, T. Hägglund, "Automatic tuning of simple regulators with specifications on phase and amplitude margins", *Automatica* 20 (1984) 645–651 (relay test).
-- B. D. Tyreus, W. L. Luyben, "Tuning PI controllers for integrator/dead time processes", *Ind. Eng. Chem. Res.* 31 (1992) 2625–2628.
-- J. G. Ziegler, N. B. Nichols, "Optimum settings for automatic controllers", *Trans. ASME* 64 (1942) 759–768.
 
 ## Licence
 

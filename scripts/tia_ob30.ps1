@@ -1,5 +1,5 @@
 <#
-  Stage 2 of the TIA build (SPEC V02): add OB30 (cyclic interrupt, 100 ms) and the DBs
+  Stage 2 of the TIA build (SPS-361, DOSSIER section 11): add OB30 (cyclic interrupt, 100 ms) and the DBs
   from plc\tia\ZoneTest_OB_DB.scl to a project made by tia_build.ps1, then compile.
 
   TIA Openness V18 has no CreateOB, and an OB generated from an SCL source becomes a

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "tcutune"
-version = "0.1.0"
-description = "Identification and PI tuning for heat/cool temperature control unit zones, with a Siemens SCL controller block"
+version = "0.2.0"
+description = "Physics-based TCU zone model, identification and PI tuning tool, and a cooling-valve linearisation that keeps one tuning robust over the operating envelope; Siemens SCL for TIA Portal V18"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"

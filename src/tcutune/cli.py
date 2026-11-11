@@ -1,6 +1,7 @@
 """tcu-tune: command-line tuning tool for TCU zones.
 
-    tcu-tune demo  DIR [--zones ABCD]          simulated test records to try the tool
+    tcu-tune demo  DIR [--zones ABCD] [--lin 2] simulated test records to try the tool
+    tcu-tune nameplate [--zone A] [--dtref 65]  FB_CoolLinearise settings from the TCU hardware
     tcu-tune fit   --heat H.csv [--cool C.csv] [--relay R.csv] [--ms 1.4] [--json F]
     tcu-tune batch DIR [--ms 1.4] [--out summary.csv]
                    DIR/<zone>/heat.csv (+ optional cool.csv, relay.csv) per zone
@@ -17,7 +18,9 @@ from pathlib import Path
 
 from . import experiments as ex
 from .experiments import StepRecord
-from .plant import PRESETS, with_noise
+from .linearise import spec_for
+from .physics import PRESET_DESIGNS, derive
+from .plant import PRESETS, cool_conductance, with_noise
 from .tool import ZoneTuning, format_report, tune_zone
 
 
@@ -47,7 +50,8 @@ def cmd_demo(a: argparse.Namespace) -> int:
         d = out / z
         d.mkdir(parents=True, exist_ok=True)
         ex.heat_step_test(p, duration=a.duration).to_csv(d / "heat.csv")
-        ex.cool_step_test(p, duration=a.duration).to_csv(d / "cool.csv")
+        lin = spec_for(PRESETS[z], a.lin) if a.lin else None
+        ex.cool_step_test(p, duration=a.duration, lin=lin).to_csv(d / "cool.csv")
         ex.relay_test(p, hyst=0.2).to_csv(d / "relay.csv")
         print(f"zone {z}: {d / 'heat.csv'}, cool.csv, relay.csv")
     return 0
@@ -59,6 +63,23 @@ def cmd_fit(a: argparse.Namespace) -> int:
     print(format_report(zt))
     if a.json:
         Path(a.json).write_text(json.dumps(_zone_json(zt), indent=2))
+    return 0
+
+
+def cmd_nameplate(a: argparse.Namespace) -> int:
+    """Print the FB_CoolLinearise parameters derived from the TCU hardware (UC2)."""
+    for z in a.zone:
+        d = PRESET_DESIGNS[z]
+        q = derive(d)
+        p = PRESETS[z]
+        print(f"Zone {z}: {d.part}")
+        for k in ("Cw", "Cm", "UAwm", "UAloss", "L", "Cp", "Cs_max"):
+            note = q.notes.get(k, "")
+            print(f"  {k:7s} = {q.params[k]:8.3f}   {note}")
+        print(f"  FB_CoolLinearise: Mode := 2; DTref := {a.dtref:.1f}; UA := {p.hx_UA:.3f}; "
+              f"CsMax := {p.Cs_max:.3f}; Cp := {p.Cp:.3f}; ValveR := {p.valve_R:.1f}; FlowExp := 0.8")
+        print(f"  G(100 %) = {cool_conductance(p, 100.0):.3f} kW/K -> 100 % demand = "
+              f"{cool_conductance(p, 100.0) * a.dtref:.1f} kW of cooling")
     return 0
 
 
@@ -100,7 +121,14 @@ def main(argv: list[str] | None = None) -> int:
     d.add_argument("dir")
     d.add_argument("--zones", default="ABCD")
     d.add_argument("--duration", type=float, default=5400.0)
+    d.add_argument("--lin", type=int, default=0, choices=(0, 1, 2),
+                   help="record the cooling test through FB_CoolLinearise in this mode")
     d.set_defaults(fn=cmd_demo)
+
+    n = sub.add_parser("nameplate", help="FB_CoolLinearise settings from the TCU hardware")
+    n.add_argument("--zone", default="ABCD")
+    n.add_argument("--dtref", type=float, default=65.0, help="Tw - Tcw at the cooling test, K")
+    n.set_defaults(fn=cmd_nameplate)
 
     f = sub.add_parser("fit", help="tune one zone from its test records")
     f.add_argument("--heat", required=True)

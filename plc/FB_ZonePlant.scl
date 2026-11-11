@@ -2,8 +2,11 @@ FUNCTION_BLOCK "FB_ZonePlant"
 TITLE = Simulated TCU zone (plant model for PLCSIM tests)
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : chad416
-VERSION : 0.1
+VERSION : 0.2
 //  Same two-mass model as src/tcutune/plant.py (no noise), explicit Euler.
+//  Cooling: HxUA > 0 -> plate exchanger, Pc = eps*Cmin*(Tw - Tcw) with the valve
+//  characteristic in front (same as tcutune.physics); HxUA = 0 -> direct cooling,
+//  Pc = Cool/100 * Kcool * (Tw - Tcw).  Defaults are zone A of tcutune.plant.PRESETS.
 //  Lets FB_ZonePID run in a closed loop inside S7-PLCSIM without hardware.
 //  Simulation only: never call this block in a real machine program.
    VAR_INPUT
@@ -12,15 +15,19 @@ VERSION : 0.1
       Qproc : Real;   // kW, process heat into the machine part
       Init : Bool;   // TRUE: set both temperatures and the delay line to InitTemp
       InitTemp : Real := 25.0;   // degC
-      Cw : Real := 63.0;   // kJ/K
-      Cm : Real := 150.0;   // kJ/K
-      UAwm : Real := 1.0;   // kW/K
-      UAloss : Real := 0.12;   // kW/K
+      Cw : Real := 76.75;   // kJ/K
+      Cm : Real := 147.2;   // kJ/K
+      UAwm : Real := 1.142;   // kW/K
+      UAloss : Real := 0.0399;   // kW/K
       PheatMax : Real := 12.0;   // kW
-      Kcool : Real := 0.5;   // kW/K at 100 % valve
+      Kcool : Real := 0.0;   // kW/K at 100 % valve (direct cooling only)
+      HxUA : Real := 0.9;   // kW/K, plate exchanger UA at full cooling flow (0 = direct)
+      CsMax : Real := 1.391;   // kW/K, cooling-water capacity rate at full flow
+      Cp : Real := 2.719;   // kW/K, primary capacity rate
+      ValveR : Real := 0.0;   // 0 linear, > 1 equal-percentage
       Tcw : Real := 15.0;   // degC
       Tamb : Real := 25.0;   // degC
-      DelaySamples : Int := 80;   // dead time / CycleTime, 1..300
+      DelaySamples : Int := 77;   // dead time / CycleTime, 1..300
       TauSensor : Real := 4.0;   // s
       SensorOnMetal : Bool;   // FALSE: water temperature, TRUE: machine part
       CycleTime : Real := 0.1;   // s
@@ -49,6 +56,16 @@ VERSION : 0.1
       tDTm : Real;
       tRaw : Real;
       tDelayed : Real;
+      tF : Real;
+      tHAp : Real;
+      tHAs : Real;
+      tUA : Real;
+      tCs : Real;
+      tCmin : Real;
+      tCmax : Real;
+      tE : Real;
+      tCr : Real;
+      tG : Real;
       tN : Int;
       i : Int;
    END_VAR
@@ -72,7 +89,34 @@ BEGIN
 	    #tHeat := LIMIT(MN := 0.0, IN := #Heat, MX := 100.0);
 	    #tCool := LIMIT(MN := 0.0, IN := #Cool, MX := 100.0);
 	    #tPh := #tHeat / 100.0 * #PheatMax;
-	    #tPc := #tCool / 100.0 * #Kcool * MAX(IN1 := #sTw - #Tcw, IN2 := 0.0);
+	    IF #HxUA > 0.0 THEN
+	        IF #ValveR > 1.0 THEN
+	            #tF := (EXP(LN(#ValveR) * (#tCool / 100.0 - 1.0)) - 1.0 / #ValveR) / (1.0 - 1.0 / #ValveR);
+	        ELSE
+	            #tF := #tCool / 100.0;
+	        END_IF;
+	        IF #tF <= 0.000001 THEN
+	            #tG := 0.0;
+	        ELSE
+	            #tHAp := 2.0 * #HxUA;
+	            #tHAs := 2.0 * #HxUA * EXP(0.8 * LN(#tF));
+	            #tUA := #tHAp * #tHAs / (#tHAp + #tHAs);
+	            #tCs := #tF * #CsMax;
+	            #tCmin := MIN(IN1 := #tCs, IN2 := #Cp);
+	            #tCmax := MAX(IN1 := #tCs, IN2 := #Cp);
+	            #tCr := #tCmin / #tCmax;
+	            IF ABS(1.0 - #tCr) < 0.0001 THEN
+	                #tE := #tUA / #tCmin / (1.0 + #tUA / #tCmin);
+	            ELSE
+	                #tE := EXP(-#tUA / #tCmin * (1.0 - #tCr));
+	                #tE := (1.0 - #tE) / (1.0 - #tCr * #tE);
+	            END_IF;
+	            #tG := #tE * #tCmin;
+	        END_IF;
+	    ELSE
+	        #tG := #tCool / 100.0 * #Kcool;
+	    END_IF;
+	    #tPc := #tG * MAX(IN1 := #sTw - #Tcw, IN2 := 0.0);
 	    #tDTw := (#tPh - #tPc + #UAwm * (#sTm - #sTw)) / #Cw;
 	    #tDTm := (#UAwm * (#sTw - #sTm) - #UAloss * (#sTm - #Tamb) + #Qproc) / #Cm;
 	    #sTw := #sTw + #CycleTime * #tDTw;

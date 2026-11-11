@@ -11,7 +11,7 @@ into a Python class and runs it with S7 data types:
 Supported statements: assignment, IF/ELSIF/ELSE, FOR ... TO ... [BY] ... DO,
 REGION, RETURN, FB multi-instance calls.  Expressions: arithmetic, comparison,
 AND/OR/XOR/NOT, MOD, array index, member access, and the functions LIMIT, MIN,
-MAX, ABS, SQRT, INT_TO_REAL, DINT_TO_REAL, REAL_TO_DINT, INT_TO_DINT.
+MAX, ABS, SQRT, EXP, LN, INT_TO_REAL, DINT_TO_REAL, REAL_TO_DINT, INT_TO_DINT.
 
 Anything else raises SclError, so an unsupported construct can never be
 silently ignored.  The authority for the real PLC is the TIA Portal compiler;
@@ -351,6 +351,10 @@ class Parser:
             return f"abs({one[0]})", one[1]
         if name == "SQRT":
             return f"_f32(np.sqrt(_f32({one[0]})))", "REAL"
+        if name == "EXP":
+            return f"_f32(np.exp(_f32({one[0]})))", "REAL"
+        if name == "LN":
+            return f"_f32(np.log(_f32({one[0]})))", "REAL"
         if name in ("INT_TO_REAL", "DINT_TO_REAL"):
             return f"_f32({one[0]})", "REAL"
         if name == "INT_TO_DINT":

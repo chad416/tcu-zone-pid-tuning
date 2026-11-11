@@ -1,4 +1,4 @@
-"""F08: controller behaviour (Python reference; the SCL is checked against it)."""
+"""SPS-204/205: controller behaviour (Python reference; the SCL is checked against it)."""
 
 import numpy as np
 
@@ -66,3 +66,18 @@ def test_reset():
     assert c.step(80.0, 70.0, Reset=True) == (0.0, 0.0)
     assert float(c.I) == 0.0
     assert isinstance(c.I, np.float32)
+
+
+def test_conditional_integration_when_cooling_valve_saturates():
+    """SPS-205: with CoolSaturated the integrator does not wind further into cooling."""
+    from tcutune.pid import PidParams, ZonePID
+    prm = PidParams(Gain=10.0, Ti=100.0, CoolGainRatio=3.0)
+    free, held = ZonePID(prm), ZonePID(prm)
+    for _ in range(50):  # too hot: the PID asks for cooling
+        free.step(70.0, 72.0)
+        held.step(70.0, 72.0, CoolSaturated=True)
+    assert held.U < 0 and free.I < held.I  # the held integrator stopped
+    # heating direction is never blocked
+    i0 = held.I
+    held.step(70.0, 60.0, CoolSaturated=True)
+    assert held.I > i0

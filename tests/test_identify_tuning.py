@@ -1,4 +1,4 @@
-"""F01, F03-F07: plant, identification and tuning against known truths."""
+"""SPS-202/203 (tool), SPS-201 inputs: plant, identification and tuning against known truths."""
 
 import numpy as np
 import pytest

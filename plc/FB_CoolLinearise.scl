@@ -1,0 +1,153 @@
+FUNCTION_BLOCK "FB_CoolLinearise"
+TITLE = Cooling-valve linearisation for one TCU zone
+{ S7_Optimized_Access := 'TRUE' }
+AUTHOR : chad416
+VERSION : 0.2
+//  Sits between FB_ZonePID.OutCool and the cooling-water valve.
+//  CoolIn is a request for cooling POWER in % of Gref * DTref (kW).
+//  Mode 0: Valve := CoolIn (no linearisation)
+//  Mode 1: Valve := CoolIn * DTref / MAX(Tw - Tcw, DTmin)
+//  Mode 2: solve G(Valve) = CoolIn/100 * Gref * DTref / MAX(Tw - Tcw, DTmin)
+//          with the plate-exchanger (effectiveness-NTU, counterflow) and
+//          valve model, by bisection (16 evaluations).
+//  UA, CsMax, Cp, ValveR come from the TCU nameplate; UA may be lowered for
+//  fouling.  Gref <= 0 uses the model's G at 100 % valve.
+//  TcwValid = FALSE (sensor fault) holds the last valid cooling-water
+//  temperature; it changes with the season, so the hold is safe for hours.
+//  Reference model: src/tcutune/linearise.py (float64).
+   VAR_INPUT
+      CoolIn : Real;   // %, cooling demand from FB_ZonePID.OutCool
+      Mode : Int := 2;   // 0 off, 1 temperature scaling, 2 model inversion
+      Tw : Real;   // degC, TCU water temperature (supply/return sensor)
+      Tcw : Real := 15.0;   // degC, cooling-water supply
+      TcwValid : Bool := TRUE;   // FALSE: hold the last valid Tcw temperature
+      DTref : Real := 65.0;   // K, Tw - Tcw at the identification test
+      DTmin : Real := 5.0;   // K, lower limit of the driving difference
+      UA : Real := 0.9;   // kW/K, exchanger UA at full cooling-water flow
+      CsMax : Real := 1.391;   // kW/K, cooling-water capacity rate at full flow
+      Cp : Real := 2.719;   // kW/K, primary (pump) capacity rate
+      ValveR : Real := 0.0;   // 0 linear (PWM solenoid), > 1 equal-percentage rangeability
+      FlowExp : Real := 0.8;   // cooling-side film coefficient ~ flow^FlowExp
+      Gref : Real := 0.0;   // kW/K, conductance that CoolIn = 100 % refers to
+   END_VAR
+
+   VAR_OUTPUT
+      Valve : Real;   // %, cooling-water valve opening
+      Saturated : Bool;   // demand above what the exchanger can deliver
+      Gdemand : Real;   // kW/K, requested cooling conductance (diagnostics)
+      TcwHeld : Bool;   // TRUE while the held value is used
+   END_VAR
+
+   VAR
+      sTcw : Real := 15.0;   // last valid cooling-water temperature
+   END_VAR
+
+   VAR_TEMP
+      tC : Real;
+      tDT : Real;
+      tX : Real;
+      tF : Real;
+      tHAp : Real;
+      tHAs : Real;
+      tUA : Real;
+      tCs : Real;
+      tCmin : Real;
+      tCmax : Real;
+      tNtu : Real;
+      tCr : Real;
+      tE : Real;
+      tG : Real;
+      tGmax : Real;
+      tGref : Real;
+      tGreq : Real;
+      tLo : Real;
+      tHi : Real;
+      i : Int;
+   END_VAR
+
+
+BEGIN
+	REGION Inputs
+	    #tC := LIMIT(MN := 0.0, IN := #CoolIn, MX := 100.0);
+	    IF #TcwValid THEN
+	        #sTcw := #Tcw;
+	    END_IF;
+	    #TcwHeld := NOT #TcwValid;
+	    #tDT := MAX(IN1 := #Tw - #sTcw, IN2 := #DTmin);
+	    #Saturated := FALSE;
+	    #Gdemand := 0.0;
+	END_REGION
+
+	IF #Mode = 0 THEN
+	    #Valve := #tC;
+	    RETURN;
+	END_IF;
+
+	IF #Mode = 1 THEN
+	    #Valve := #tC * #DTref / #tDT;
+	    IF #Valve >= 100.0 THEN
+	        #Valve := 100.0;
+	        #Saturated := TRUE;
+	    END_IF;
+	    RETURN;
+	END_IF;
+
+	REGION Model_inversion
+	    #tLo := 0.0;
+	    #tHi := 1.0;
+	    #tGreq := 0.0;
+	    #tGmax := 0.0;
+	    FOR #i := 0 TO 15 DO
+	        IF #i = 0 THEN
+	            #tX := 1.0;
+	        ELSE
+	            #tX := 0.5 * (#tLo + #tHi);
+	        END_IF;
+	        // valve characteristic -> cooling-water flow fraction
+	        IF #ValveR > 1.0 THEN
+	            #tF := (EXP(LN(#ValveR) * (#tX - 1.0)) - 1.0 / #ValveR) / (1.0 - 1.0 / #ValveR);
+	        ELSE
+	            #tF := #tX;
+	        END_IF;
+	        // exchanger conductance G = eps * Cmin (counterflow)
+	        IF #tF <= 0.000001 THEN
+	            #tG := 0.0;
+	        ELSE
+	            #tHAp := 2.0 * #UA;
+	            #tHAs := 2.0 * #UA * EXP(#FlowExp * LN(#tF));
+	            #tUA := #tHAp * #tHAs / (#tHAp + #tHAs);
+	            #tCs := #tF * #CsMax;
+	            #tCmin := MIN(IN1 := #tCs, IN2 := #Cp);
+	            #tCmax := MAX(IN1 := #tCs, IN2 := #Cp);
+	            #tNtu := #tUA / #tCmin;
+	            #tCr := #tCmin / #tCmax;
+	            IF ABS(1.0 - #tCr) < 0.0001 THEN
+	                #tE := #tNtu / (1.0 + #tNtu);
+	            ELSE
+	                #tE := EXP(-#tNtu * (1.0 - #tCr));
+	                #tE := (1.0 - #tE) / (1.0 - #tCr * #tE);
+	            END_IF;
+	            #tG := #tE * #tCmin;
+	        END_IF;
+	        IF #i = 0 THEN
+	            #tGmax := #tG;
+	            #tGref := #Gref;
+	            IF #tGref <= 0.0 THEN
+	                #tGref := #tGmax;
+	            END_IF;
+	            #tGreq := #tC / 100.0 * #tGref * #DTref / #tDT;
+	        ELSIF #tG < #tGreq THEN
+	            #tLo := #tX;
+	        ELSE
+	            #tHi := #tX;
+	        END_IF;
+	    END_FOR;
+	    #Gdemand := #tGreq;
+	    IF #tGreq >= #tGmax THEN
+	        #Valve := 100.0;
+	        #Saturated := TRUE;
+	    ELSE
+	        #Valve := 50.0 * (#tLo + #tHi);   // not 100.0 * 0.5 * (...): TIA folds that into an LReal constant (warning 78)
+	    END_IF;
+	END_REGION
+END_FUNCTION_BLOCK

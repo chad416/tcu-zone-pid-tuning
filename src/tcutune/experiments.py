@@ -80,15 +80,37 @@ def heat_step_test(p: ZoneParams, T_op: float = 75.0, du: float = 10.0,
 
 def cool_step_test(p: ZoneParams, T_op: float = 80.0, Qproc: float | None = None,
                    du: float = 4.0, pre: float = 120.0, duration: float = 3600.0,
-                   Ts: float = 0.1, seed: int = 2) -> StepRecord:
-    """Machine running (Qproc, default p.q_run), heater off, valve stepped by +du %."""
+                   Ts: float = 0.1, seed: int = 2, lin=None, tw_tau: float = 2.0) -> StepRecord:
+    """Machine running (Qproc, default p.q_run), heater off, cooling stepped by +du %.
+
+    With lin (a linearise.LinSpec) the step is made on the cooling *demand*
+    in front of the linearisation, as the technician would do on a TCU that
+    has it switched on; the record then holds the demand, not the valve."""
     Qproc = p.q_run if Qproc is None else Qproc
-    c0 = cool_for(p, T_op, Qproc)
+    v0 = cool_for(p, T_op, Qproc)
     z = Zone(p, Ts=Ts, seed=seed)
-    z.set_steady(0.0, c0, Qproc)
-    r = run_open_loop(z, const(0.0), steps((pre, c0 + du), initial=c0), duration,
-                      Qproc=const(Qproc))
-    return StepRecord(r.t, r.heat, r.cool, r.pv)
+    z.set_steady(0.0, v0, Qproc)
+    if lin is None or lin.mode == 0:
+        r = run_open_loop(z, const(0.0), steps((pre, v0 + du), initial=v0), duration,
+                          Qproc=const(Qproc))
+        return StepRecord(r.t, r.heat, r.cool, r.pv)
+    Tw0 = z.state.Tw
+    target = v0
+    lo, hi = 0.0, 100.0
+    for _ in range(60):  # demand that gives the steady valve opening
+        mid = 0.5 * (lo + hi)
+        lo, hi = (mid, hi) if lin.valve(mid, Tw0, p.Tcw)[0] < target else (lo, mid)
+    c0 = 0.5 * (lo + hi)
+    n = int(round(duration / Ts))
+    t = np.arange(n) * Ts
+    c = np.where(t >= pre, c0 + du, c0)
+    pv = np.empty(n)
+    tw_meas, a = Tw0, Ts / (tw_tau + Ts)
+    for k in range(n):
+        v = lin.valve(c[k], tw_meas, p.Tcw)[0]
+        pv[k] = z.step(0.0, v, Qproc)
+        tw_meas += a * (z.state.Tw - tw_meas)
+    return StepRecord(t, np.zeros(n), c, pv)
 
 
 def relay_test(p: ZoneParams, sp: float = 75.0, d: float = 25.0, hyst: float = 0.2,
@@ -160,20 +182,44 @@ class ClosedLoopRun:
 
 
 def closed_loop(p: ZoneParams, prm: PidParams, sc: Scenario | None = None,
-                Ts: float = 0.1, seed: int = 4) -> ClosedLoopRun:
-    """Same order as FB_ZoneTest: scenario -> controller(last PV) -> plant."""
+                Ts: float = 0.1, seed: int = 4, lin=None, q_fn=None,
+                ff_gain: float = 0.0, ff_meas: float = 1.0, tw_tau: float = 2.0,
+                ) -> ClosedLoopRun:
+    """Same order as FB_ZoneTest: scenario -> controller(last PV) -> plant.
+
+    lin     : linearise.LinSpec in front of the cooling valve (None = off); it
+              uses the TCU's water temperature through a tw_tau first-order lag
+              and the preset's cooling-water temperature.
+    q_fn    : process heat profile q(t) in kW (default: the scenario's load step).
+    ff_gain : feedforward in heating-equivalent % per kW of *measured* process
+              power, applied with the sign that cancels it (0 = off); the
+              measurement is ff_meas * q (ff_meas != 1 models a wrong estimate).
+    """
     sc = sc or production_scenario(p)
     z = Zone(p, Ts=Ts, T0=25.0, seed=seed)
     pid = ZonePID(prm, Ts=Ts)
     n = int(round(sc.t_end / Ts))
     t = np.arange(n) * Ts
     sp = np.where(t >= sc.t_sp_low, sc.sp_low, np.where(t >= sc.t_sp_high, sc.sp_high, sc.sp_start))
-    q = np.where((t >= sc.t_load_on) & (t < sc.t_load_off), sc.q_run, 0.0)
+    if q_fn is None:
+        q = np.where((t >= sc.t_load_on) & (t < sc.t_load_off), sc.q_run, 0.0)
+    else:
+        q = np.array([q_fn(tk) for tk in t])
     pv, heat, cool, u = (np.empty(n) for _ in range(4))
     y = 25.0
+    tw_meas = z.state.Tw
+    a = Ts / (tw_tau + Ts)
+    sat = False
     for k in range(n):
-        h, c = pid.step(sp[k], y)
-        heat[k], cool[k], u[k] = h, c, float(pid.U)
-        y = z.step(h, c, q[k])
+        ff = -ff_gain * ff_meas * q[k] if ff_gain else 0.0
+        h, c = pid.step(sp[k], y, FeedForward=ff, CoolSaturated=sat)
+        heat[k], u[k] = h, float(pid.U)
+        if lin is None:
+            v, sat = c, False
+        else:
+            v, sat = lin.valve(c, tw_meas, p.Tcw)
+        cool[k] = v
+        y = z.step(h, v, q[k])
+        tw_meas += a * (z.state.Tw - tw_meas)
         pv[k] = y
     return ClosedLoopRun(t, sp, pv, heat, cool, u, q, sc)

@@ -11,10 +11,14 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -r requirements.txt
-      - run: python -m pytest -q
+      - name: Unit tests, physics, envelope and SCL equivalence (float32 Real)
+        run: python -m pytest -q
+      - name: SCL sources translate (the TIA build itself needs Windows + TIA Portal)
+        run: PYTHONPATH=src python -c "import glob; from tcutune import scl; print(sorted(scl.load(sorted(glob.glob('plc/FB_*.scl')))))"
       - name: tool smoke test
         run: |
           pip install -e .
-          tcu-tune demo /tmp/zones --zones A --duration 3600
+          tcu-tune nameplate --zone AB
+          tcu-tune demo /tmp/zones --zones A --duration 3600 --lin 2
           tcu-tune batch /tmp/zones --out /tmp/summary.csv
           cat /tmp/summary.csv

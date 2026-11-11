@@ -2,11 +2,13 @@ FUNCTION_BLOCK "FB_ZonePID"
 TITLE = Split-range heat/cool PID for one TCU zone
 { S7_Optimized_Access := 'TRUE' }
 AUTHOR : chad416
-VERSION : 0.1
+VERSION : 0.2
 //  Call every CycleTime seconds from a cyclic interrupt OB (e.g. OB30, 100 ms).
 //  Output is in heating-equivalent percent: Output > 0 heats, Output < 0 cools.
 //  CoolGainRatio = Kcool / Kheat (process gains). The cooling output is divided
 //  by it so the loop gain is the same in both ranges.
+//  FeedForward (heating-equivalent %) is added to the PID sum, through a
+//  first-order lag FfTime (s); e.g. -FfGain * measured process power.
 //  The float32 reference model is src/tcutune/pid.py: keep both in step.
    VAR_INPUT
       Setpoint : Real;   // degC
@@ -23,6 +25,9 @@ VERSION : 0.1
       CoolGainRatio : Real := 1.0;   // Kcool / Kheat
       Deadband : Real := 0.0;   // %, |Output| below this switches both actuators off
       CycleTime : Real := 0.1;   // s, call interval of the OB
+      FeedForward : Real;   // %, heating-equivalent, 0 = none
+      FfTime : Real := 0.0;   // s, lag on FeedForward, 0 = none
+      CoolSaturated : Bool;   // FB_CoolLinearise.Saturated (last cycle): stop integrating into cooling
    END_VAR
 
    VAR_OUTPUT
@@ -35,6 +40,7 @@ VERSION : 0.1
       sI : Real;   // integral part
       sD : Real;   // filtered derivative part
       sPvPrev : Real;
+      sF : Real;   // lagged feedforward
       sInitialised : Bool;
    END_VAR
 
@@ -46,6 +52,7 @@ VERSION : 0.1
       tOutLo : Real;
       tRatio : Real;
       tTt : Real;
+      tInc : Real;
    END_VAR
 
 
@@ -54,6 +61,7 @@ BEGIN
 	    IF #Reset THEN
 	        #sI := 0.0;
 	        #sD := 0.0;
+	        #sF := 0.0;
 	        #sInitialised := FALSE;
 	        #Output := 0.0;
 	        #OutHeat := 0.0;
@@ -62,6 +70,7 @@ BEGIN
 	    END_IF;
 	    IF NOT #sInitialised THEN
 	        #sPvPrev := #Input;
+	        #sF := #FeedForward;
 	        #sInitialised := TRUE;
 	    END_IF;
 	END_REGION
@@ -89,16 +98,26 @@ BEGIN
 	        #sD := 0.0;
 	    END_IF;
 
-	    #tU0 := #tP + #sI + #sD;
+	    IF #FfTime > 0.0 THEN
+	        #sF := #sF + #CycleTime / (#FfTime + #CycleTime) * (#FeedForward - #sF);
+	    ELSE
+	        #sF := #FeedForward;
+	    END_IF;
+
+	    #tU0 := #tP + #sI + #sD + #sF;
 
 	    IF #ManualEnable THEN
 	        #tU := LIMIT(MN := #tOutLo, IN := #ManualValue, MX := 100.0);
-	        #sI := #tU - #tP - #sD;   // integral tracks the manual value
+	        #sI := #tU - #tP - #sD - #sF;   // integral tracks the manual value
 	    ELSE
 	        #tU := LIMIT(MN := #tOutLo, IN := #tU0, MX := 100.0);
 	        IF #Ti > 0.0 THEN
 	            // integration plus back-calculation anti-windup
-	            #sI := #sI + #Gain * #CycleTime / #Ti * (#Setpoint - #Input) + #CycleTime / #tTt * (#tU - #tU0);
+	            #tInc := #Gain * #CycleTime / #Ti * (#Setpoint - #Input);
+	            IF #CoolSaturated AND #tU < 0.0 AND #tInc < 0.0 THEN
+	                #tInc := 0.0;   // conditional integration: valve already fully open
+	            END_IF;
+	            #sI := #sI + #tInc + #CycleTime / #tTt * (#tU - #tU0);
 	        ELSE
 	            #sI := 0.0;
 	        END_IF;

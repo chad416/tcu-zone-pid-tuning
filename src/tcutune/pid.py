@@ -8,9 +8,15 @@ Controller (one zone, split range):
 
     P  = Gain * (SpWeight*Sp - Pv)
     D  = a*D - Gain*N*a*(Pv - PvPrev),        a = Td / (Td + N*Ts)
-    u0 = P + I + D
+    F  = F + Ts/(FfTime + Ts)*(FeedForward - F)   (FfTime > 0, else F = FeedForward)
+    u0 = P + I + D + F
     u  = LIMIT(OutLo, u0, 100),               OutLo = -100 * CoolGainRatio
-    I += Gain*Ts/Ti*(Sp - Pv) + Ts/Tt*(u - u0)          (back-calculation)
+    inc = Gain*Ts/Ti*(Sp - Pv);  inc = 0 if CoolSaturated and u < 0 and inc < 0
+    I += inc + Ts/Tt*(u - u0)                          (back-calculation)
+
+CoolSaturated comes from FB_CoolLinearise (previous cycle): the valve is fully
+open before the PID's own cooling limit is reached, so the PID must stop
+integrating further into cooling (conditional integration).
     u >= 0 -> Heat = u,  Cool = 0
     u <  0 -> Heat = 0,  Cool = -u / CoolGainRatio
 
@@ -39,6 +45,7 @@ class PidParams:
     Tt: float = 0.0  # s, anti-windup tracking time, <= 0 -> Ti
     CoolGainRatio: float = 1.0  # Kcool / Kheat
     Deadband: float = 0.0  # %, |u| below this -> both outputs 0
+    FfTime: float = 0.0  # s, first-order lag on the feedforward input, 0 = none
 
 
 class ZonePID:
@@ -50,6 +57,7 @@ class ZonePID:
         self.I = f32(0.0)
         self.D = f32(0.0)
         self.PvPrev = f32(0.0)
+        self.F = f32(0.0)
         self.Initialised = False
         self.U = f32(0.0)
         self.Heat = f32(0.0)
@@ -58,12 +66,15 @@ class ZonePID:
     def reset(self) -> None:
         self.I = f32(0.0)
         self.D = f32(0.0)
+        self.F = f32(0.0)
         self.Initialised = False
 
     def step(self, Sp: float, Pv: float, Manual: bool = False,
-             ManualValue: float = 0.0, Reset: bool = False) -> tuple[float, float]:
+             ManualValue: float = 0.0, Reset: bool = False,
+             FeedForward: float = 0.0, CoolSaturated: bool = False) -> tuple[float, float]:
         p = self.prm
         Sp, Pv, ManualValue = f32(Sp), f32(Pv), f32(ManualValue)
+        FeedForward, FfTime = f32(FeedForward), f32(p.FfTime)
         Gain, Ti, Td, N = f32(p.Gain), f32(p.Ti), f32(p.Td), f32(p.N)
         SpWeight, Tt, Ratio, Deadband = (f32(p.SpWeight), f32(p.Tt),
                                          f32(p.CoolGainRatio), f32(p.Deadband))
@@ -72,12 +83,14 @@ class ZonePID:
         if Reset:
             self.I = f32(0.0)
             self.D = f32(0.0)
+            self.F = f32(0.0)
             self.Initialised = False
             self.U, self.Heat, self.Cool = f32(0.0), f32(0.0), f32(0.0)
             return 0.0, 0.0
 
         if not self.Initialised:
             self.PvPrev = Pv
+            self.F = FeedForward
             self.Initialised = True
 
         if Ratio < f32(0.01):
@@ -94,14 +107,22 @@ class ZonePID:
         else:
             self.D = f32(0.0)
 
-        U0 = P + self.I + self.D
+        if FfTime > f32(0.0):
+            self.F = self.F + Ts / (FfTime + Ts) * (FeedForward - self.F)
+        else:
+            self.F = FeedForward
+
+        U0 = P + self.I + self.D + self.F
         if Manual:
             U = min(max(ManualValue, OutLo), f32(100.0))
-            self.I = U - P - self.D  # bumpless return to auto
+            self.I = U - P - self.D - self.F  # bumpless return to auto
         else:
             U = min(max(U0, OutLo), f32(100.0))
             if Ti > f32(0.0):
-                self.I = self.I + Gain * Ts / Ti * (Sp - Pv) + Ts / Tt * (U - U0)
+                inc = Gain * Ts / Ti * (Sp - Pv)
+                if CoolSaturated and U < f32(0.0) and inc < f32(0.0):
+                    inc = f32(0.0)
+                self.I = self.I + inc + Ts / Tt * (U - U0)
             else:
                 self.I = f32(0.0)
 
